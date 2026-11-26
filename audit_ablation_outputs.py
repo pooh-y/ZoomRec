@@ -7,15 +7,17 @@ import hashlib
 import json
 import math
 import os
+from dataclasses import asdict
 from pathlib import Path
 from generation_protocol import generation_settings, check_completed_call
+from preference_graph import ALL_VARIANTS
 from sasrec_candidates import POLICY as CANDIDATE_POLICY
-from run_paths import CODE_DIR, HERE, DATA_ROOT, SOURCE
+from run_paths import ABLATION_REQUEST, CODE_DIR, HERE, DATA_ROOT, SOURCE
 
 
-VARIANTS = tuple(json.loads((CODE_DIR / 'ablation_request.json').read_text(encoding='utf-8'))['requested_variants'])
+VARIANTS = tuple(json.loads(ABLATION_REQUEST.read_text(encoding='utf-8'))['requested_variants'])
 assert VARIANTS and len(set(VARIANTS)) == len(VARIANTS)
-assert set(VARIANTS) <= {'full', 'no_adaptive_granularity', 'no_revision', 'no_recovery', 'no_both'}
+assert set(VARIANTS) <= ALL_VARIANTS.keys()
 KS = (1, 3, 5, 10)
 METRICS = tuple([f"HR@{k}" for k in KS] + [f"NDCG@{k}" for k in KS])
 
@@ -97,18 +99,31 @@ def check_trace(action, event):
 
 
 def check_mechanisms(action, variant):
-    adaptive = variant not in ("no_adaptive_granularity", "no_both")
-    revision = variant not in ("no_revision", "no_both")
-    recovery = variant not in ("no_recovery", "no_both")
+    mechanisms = ALL_VARIANTS[variant]
+    if not mechanisms.agent_review:
+        assert not action["plan_called"] and not action["decision_called"]
+        assert not action["observations"]["retrieved"] and not action["observations"]["verified"]
+        context = action["context"]
+        matches = {(option["item"], hid) for option in context["options"] for hid in option["hypotheses"]}
+        assert matches == {(row["item"], row["hypothesis"]) for row in action["approved"]}
+        prior_weights = {tuple(h["key"]): h["assessment"]["effective_weight"]
+                         for h in action["pre_observation"]["hypotheses"]}
+        evidence = {h["id"]: (("@category" if h["level"] == "category" else h["source"]),
+                              h["destination"], h["attribute"]) for h in context["hypotheses"]}
+        for row in action["approved"]:
+            assert row["source"] == "rule" and "confidence" not in row
+            assert row["ledger_weight"] == prior_weights[evidence[row["hypothesis"]]] > 0
     for trace_name in ("pre_observation", "post_observation"):
         trace = action[trace_name]
         assert trace["variant"] == variant
-        assert trace["mechanisms"] == dict(adaptive_granularity=adaptive,
-            local_revision=revision, recovery=recovery)
-        if not revision:
+        assert trace["mechanisms"] == asdict(mechanisms)
+        if not mechanisms.local_revision:
             assert not trace["revisions"]
             assert all(h["content"] == h["original_content"] for h in trace["hypotheses"])
-        if not recovery:
+        if not mechanisms.local_reopening:
+            for revision in trace["revisions"]:
+                assert set(revision["after"]["applicable_categories"]) <= set(revision["before"]["applicable_categories"])
+        if not mechanisms.recovery:
             withdrawn = {tuple(key) for key in trace["permanently_withdrawn"]}
             for transition in trace["transitions"]:
                 assert transition["operation"] != "recover"
@@ -137,18 +152,25 @@ def reconstruct_order(case, action, prediction, execution, setting):
     assert len({(row["item"], row["hypothesis"]) for row in approved}) == len(approved)
     expected_bonuses = {}
     claim_bonus = {}
+    reviewed = ALL_VARIANTS[action["method"]].agent_review
     for row in approved:
         assert row["item"] in base
-        if setting["min_confidence"] == "high" and row["confidence"] != "high":
-            continue
+        if reviewed:
+            if row["confidence"] not in ("high", "medium"):
+                continue
+            if setting["min_confidence"] == "high" and row["confidence"] != "high":
+                continue
+        else:
+            assert row["source"] == "rule" and "confidence" not in row
         value = setting["strength"] * row["ledger_weight"]
-        if value <= 0 or row["confidence"] not in ("high", "medium"):
+        if value <= 0:
             continue
         claim_bonus[row["item"], row["hypothesis"]] = value
         expected_bonuses[row["item"]] = max(expected_bonuses.get(row["item"], value), value)
     assert set(bonuses) == set(expected_bonuses)
     for item, value in expected_bonuses.items():
         assert math.isclose(float(bonuses[item]), value, rel_tol=0, abs_tol=1e-12)
+    promoted_once = set()
     for crossing in execution["crossings"]:
         promoted, displaced = crossing["promoted"], crossing["displaced"]
         assert promoted in base and displaced in base and promoted != displaced
@@ -162,8 +184,10 @@ def reconstruct_order(case, action, prediction, execution, setting):
         assert key in claim_bonus, "crossing requires an unused qualifying claim"
         bonus = claim_bonus.pop(key)
         assert math.isclose(crossing["bonus"], bonus, rel_tol=0, abs_tol=1e-12)
-        assert (-(base[promoted] + bonus), promoted) < (
-            -(base[displaced] + bonuses.get(displaced, 0.)), displaced)
+        if action["method"] == "no_adaptive_granularity":
+            assert bonus == expected_bonuses[promoted] and promoted not in promoted_once
+            promoted_once.add(promoted)
+        assert base[promoted] + bonus > base[displaced] + expected_bonuses.get(displaced, 0.)
         order[target_pos], order[source_pos] = order[source_pos], order[target_pos]
     moves = max(abs(i - original.index(item)) for i, item in enumerate(order))
     assert moves == execution["max_displacement"]

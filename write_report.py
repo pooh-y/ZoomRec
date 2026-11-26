@@ -3,10 +3,13 @@ from full_evaluation import HERE, METRICS, VARIANTS, read
 
 
 LABELS = {
-    'full': 'Full method (all three mechanisms enabled)',
-    'no_adaptive_granularity': 'Fixed granularity (category first, then attribute)',
+    'full': 'ZoomRec',
+    'no_adaptive_granularity': 'w/o Adaptive Granularity',
+    'no_local_reopening': 'w/o Local Reopening',
+    'no_local_revision_and_state_recovery': 'w/o Local Revision and State Recovery',
+    'no_agent_review': 'w/o Agent Review',
     'no_revision': 'No local revision (claim content stays fixed)',
-    'no_recovery': 'No recovery (withdrawn claims stay inactive)',
+    'no_recovery': 'w/o Local Reopening',
     'no_both': 'All three mechanisms disabled',
 }
 
@@ -44,8 +47,8 @@ def write_report(result):
         lines.append('| ' + LABELS[variant] + ' | ' + ' | '.join(f'{row[m]:.6f}' for m in METRICS) + ' |')
     lines += [
         '',
-        'Metrics range from 0 to 1. Each method makes its own agent decisions using shared '
-        'frozen history summaries, baseline rankings and candidate sets.',
+        'Metrics range from 0 to 1. All methods use the same frozen history summaries, '
+        'baseline rankings and candidate sets. The w/o Agent Review variant uses rule-qualified matches directly.',
         '',
         'The full method and all four ablations allow interventions regardless of the number of '
         'earlier visits to the target category. The test set was excluded from parameter selection.',
@@ -54,8 +57,7 @@ def write_report(result):
         'ranking quality. Assessing the meaning of the selected granularity and the effects of '
         'local revisions requires separate evidence.',
         '',
-        'Full-method and ablation results are saved separately. Compare runs using the recorded '
-        'implementation, input hashes and inference settings.',
+        'The manifest records the selected methods, implementation, input hashes and inference settings.',
         '',
     ]
     filename = 'FULL_METHOD_REPORT.md' if is_full else 'ABLATION_REPORT.md'

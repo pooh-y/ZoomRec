@@ -15,18 +15,25 @@ from ledger import CONFIG, PreferenceEvidenceTrajectory, digest, evidence_direct
 
 @dataclass(frozen=True)
 class Mechanisms:
-    adaptive_granularity: bool
-    local_revision: bool
-    recovery: bool
+    adaptive_granularity: bool = True
+    local_revision: bool = True
+    recovery: bool = True  # Reassess a withdrawn claim's evidence state.
+    local_reopening: bool = True  # Restore a suspended destination to its scope.
+    agent_review: bool = True
 
 
 VARIANTS = {
-    'no_adaptive_granularity': Mechanisms(False, True, True),
-    'no_revision': Mechanisms(True, False, True),
-    'no_recovery': Mechanisms(True, True, False),
-    'no_both': Mechanisms(False, False, False),
+    'no_adaptive_granularity': Mechanisms(adaptive_granularity=False),
+    'no_local_reopening': Mechanisms(local_reopening=False),
+    'no_local_revision_and_state_recovery': Mechanisms(local_revision=False, local_reopening=False, recovery=False),
+    'no_agent_review': Mechanisms(agent_review=False),
 }
-ALL_VARIANTS = {'full': Mechanisms(True, True, True), **VARIANTS}
+ALL_VARIANTS = {
+    'full': Mechanisms(), **VARIANTS,
+    'no_recovery': VARIANTS['no_local_reopening'],
+    'no_revision': Mechanisms(local_revision=False, local_reopening=False),
+    'no_both': Mechanisms(adaptive_granularity=False, local_revision=False, local_reopening=False, recovery=False),
+}
 
 
 class ScopedPreferenceMemory:
@@ -189,7 +196,7 @@ class ScopedPreferenceMemory:
         last = max((x['index'] for x in matching), default=None)
         after = [x for x in h['target_evidence'] if last is not None and
                  x['index'] > last and x['direction'] in ('support', 'weak_support')]
-        reopened = len({x['item'] for x in after}) >= CONFIG['source_distinct']
+        reopened = self.mechanisms.local_reopening and len({x['item'] for x in after}) >= CONFIG['source_distinct']
         categories = {h['source'], h['destination']}
         if last is not None and not reopened:
             categories = {h['source']}

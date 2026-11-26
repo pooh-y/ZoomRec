@@ -8,7 +8,7 @@ python -B test_full_protocol.py
 python -B test_ledger_gate.py
 ```
 
-Candidate tests check exclusion of the full observed prefix and padding, ties at the twentieth position, reproducible shuffling, item-score alignment and zero credit for missing targets. The ranking tests cover single adjacent swaps, repeated promotions to first place, duplicate claims, repeated displacement of a neighbor, confidence filtering and step-by-step replay. The multi-page regression follows evidence through planning, verification, decisions and the shard output audit.
+Candidate tests check exclusion of the full observed prefix and padding, ties at the twentieth position, reproducible shuffling, item-score alignment and zero credit for missing targets. The ranking tests check strict comparisons in both item-ID orders, repeated promotions, duplicate claims, confidence filtering and the independent audit. The ablation tests distinguish destination reopening from claim-state recovery and check rule-only promotions with zero agent calls.
 
 With the dataset and Qwen weights prepared, run one shard to check GPU execution. The launcher trains SASRec, runs inference, audits the shard and removes temporary run files on exit.
 

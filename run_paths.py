@@ -29,6 +29,7 @@ def project_hashes(hashes):
 
 
 DATA_ROOT = configured_path('ZOOMREC_DATA_ROOT', '../zoomrec_data')
+ABLATION_REQUEST = configured_path('ZOOMREC_ABLATION_REQUEST', 'ablation_request.json')
 HERE = configured_path('ZOOMREC_RUN_DIR', '../zoomrec_runs/loo_unseen_top20')
 SOURCE = HERE / 'inputs'
 MODEL_PATH = configured_path('ZOOMREC_QWEN_MODEL', '../models/Qwen3-4B-Instruct-2507')

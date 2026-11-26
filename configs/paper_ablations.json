@@ -1,0 +1,13 @@
+{
+  "requested_variants": [
+    "full",
+    "no_adaptive_granularity",
+    "no_local_reopening",
+    "no_local_revision_and_state_recovery",
+    "no_agent_review"
+  ],
+  "run_full_method": true,
+  "confirmed_decisions": {
+    "restrict_to_cold_categories": false
+  }
+}

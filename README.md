@@ -32,6 +32,9 @@ python launch.py --gpu 0 --workers 4 --checkpoint fresh
 
 The protocol describes the data boundaries, the role of history summaries and the interpretation of metrics. [Method and evaluation protocol](docs/PROTOCOL.md)
 
+To evaluate ZoomRec and all four Section 5.3 ablations together, set
+`ZOOMREC_ABLATION_REQUEST=configs/paper_ablations.json` before running the launcher. [Running the ablations](docs/RUNNING.md)
+
 ## Project files
 
 ```text

@@ -9,10 +9,10 @@ from pathlib import Path
 from ledger import clean_cards, review_event
 from preference_graph import ScopedPreferenceMemory, ALL_VARIANTS
 from recommendation_agent import (AGENT_CONFIG, bounded_rank, decision_prompt,
-    evidence_pages, execute_plan, make_context, plan_prompt, validate_decision)
+    evidence_pages, execute_plan, make_context, plan_prompt, rule_approvals, validate_decision)
 from generation_protocol import generation_settings, MAX_MODEL_LEN
 from data_split import PROTOCOL, cuts, make_events, audit_events
-from run_paths import CODE_DIR, HERE, DATA_ROOT, SOURCE, project_hashes, project_reference
+from run_paths import ABLATION_REQUEST, CODE_DIR, HERE, DATA_ROOT, SOURCE, project_hashes, project_reference
 from sasrec_candidates import POLICY as CANDIDATE_POLICY
 from ranking_metrics import METRICS, TOP_K, metric_table, target_rank
 from training_protocol import VERSION as TRAINING_VERSION, training_policy, validate_training_record
@@ -23,7 +23,7 @@ def read(path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
-_request = read(CODE_DIR / 'ablation_request.json')
+_request = read(ABLATION_REQUEST)
 _names = _request['requested_variants']
 if not _names or len(_names) != len(set(_names)) or set(_names) - set(ALL_VARIANTS):
     raise ValueError('requested_variants must contain distinct supported method names')
@@ -65,10 +65,10 @@ def check_hashes(hashes):
 
 
 def verify_source():
-    files = [*sorted(CODE_DIR.glob('*.py')), CODE_DIR / 'ablation_request.json',
+    files = [*sorted(CODE_DIR.glob('*.py')), ABLATION_REQUEST,
              CODE_DIR / 'selection.json', CODE_DIR / 'configs/data_sources.json']
     return dict(source_directory='.', portable=True, files_checked=len(files),
-                sha256={str(p.relative_to(CODE_DIR)): sha(p) for p in files})
+                sha256={project_reference(p): sha(p) for p in files})
 
 
 def validate_cases(cases, events):
@@ -112,7 +112,7 @@ def _prepare(device, min_epochs, batch, chunk_size):
         assert manifest['chunk_size'] == chunk_size, 'Chunk size changed; use a new run directory'
         assert manifest['input_provenance']['training']['checkpoint_mode'] == 'fresh'
         return manifest
-    request = read(CODE_DIR / 'ablation_request.json')
+    request = read(ABLATION_REQUEST)
     assert request['confirmed_decisions']['restrict_to_cold_categories'] is False
     source_check = verify_source()
     from prepare_loo import prepare_inputs
@@ -127,7 +127,7 @@ def _prepare(device, min_epochs, batch, chunk_size):
         batch_events = events[shard_id * inputs['chunk_size']:(shard_id + 1) * inputs['chunk_size']]
         validate_cases(cases, batch_events)
     paths += [SOURCE / 'manifest.json', DATA_ROOT / 'data/raw/reviews_Beauty_5.json.gz',
-              CODE_DIR / 'ablation_request.json', *sorted(CODE_DIR.glob('*.py'))]
+              ABLATION_REQUEST, *sorted(CODE_DIR.glob('*.py'))]
     manifest = dict(status='prepared', protocol=PROTOCOL, training_policy=policy,
         model_selection=inputs['model_selection'], candidate_policy=inputs['candidate_policy'], seed=SEED, candidate_count=TOP_K, counts=inputs['counts'],
         audit=audit, n_shards=inputs['n_shards'], chunk_size=inputs['chunk_size'],
@@ -140,7 +140,7 @@ def _prepare(device, min_epochs, batch, chunk_size):
         attributes='Filtered title-token proxies; no semantic attribute ground truth.',
         design=('Full method with adaptive granularity, local revision and recovery enabled.'
                 if list(VARIANTS) == ['full'] else
-                'Four-group ablation paired with a separate full-method evaluation; no test tuning.'),
+                'Selected methods evaluated on the same frozen inputs and ranking settings.'),
         scope_revision='Narrow only contradicted destination scope; reopen after two subsequent distinct supportive items.',
         granularity='Adaptive: supported attribute else independently supported category. Fixed: category then attribute.',
         rating_interpretation='Low item ratings are weak scoped counterevidence, not causal attribute labels.')
@@ -167,15 +167,18 @@ class Reviews:
 
 def run_variant(qwen, cases, cards, boundary, sequences, reviews, variant, folder, setting):
     folder = Path(folder)
+    mechanisms = ALL_VARIANTS[variant]
     prepared, plan_requests = [], []
     for case in cases:
         m = ScopedPreferenceMemory(boundary, variant)
         seq = sequences[case['uid']]
         for j, item in enumerate(case['history']):
             m.observe(reviews.event(case['uid'], j, item, seq))
-        ctx = make_context(case['history'], case['candidates'], case['baseline'], case['gate'], m, cards)
+        ctx = make_context(case['history'], case['candidates'], case['baseline'], case['gate'], m, cards,
+                           include_first=not mechanisms.agent_review)
         pages = {}
-        for page_index, page in enumerate(evidence_pages(ctx)):
+        review_pages = evidence_pages(ctx) if mechanisms.agent_review else ()
+        for page_index, page in enumerate(review_pages):
             call_id = case['event_id'] if page_index == 0 else f"{case['event_id']}/page/{page_index + 1}"
             pages[call_id] = page
             plan_requests.append(dict(id=call_id, prompt=plan_prompt(page)))
@@ -213,10 +216,14 @@ def run_variant(qwen, cases, cards, boundary, sequences, reviews, variant, folde
                 approved.extend(result['approved'])
                 errors.extend(result['errors'])
                 decision_ids.append(call_id)
+        if not mechanisms.agent_review:
+            approved = rule_approvals(ctx)
         obs = dict(retrieved=list(retrieved.values()), verified=list(verified.values()), errors=plan_errors)
         prior = m.trace()
         context = copy.deepcopy(ctx['summary'])
-        order, execution = bounded_rank(case['candidates'], case['baseline'], case['gate'], approved, setting)
+        order, execution = bounded_rank(case['candidates'], case['baseline'], case['gate'], approved, setting,
+                                        agent_review=mechanisms.agent_review,
+                                        strongest_only=variant == 'no_adaptive_granularity')
         row = {k: v for k, v in case.items() if k not in ('baseline', 'target_category', 'sasrec_rank',
             'sasrec_top10', 'baseline_top10', 'baseline_rank')}
         row.update(method=variant, rank=target_rank(order, case['target']), top10=order[:10],

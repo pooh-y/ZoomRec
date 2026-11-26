@@ -8,8 +8,9 @@ from pathlib import Path
 
 from full_evaluation import METRICS, metric_table, run_variant
 from ledger import review_event
-from preference_graph import ScopedPreferenceMemory, VARIANTS
-from recommendation_agent import make_context, plan_prompt, execute_plan, validate_decision
+from audit_ablation_outputs import check_mechanisms, reconstruct_order
+from preference_graph import ALL_VARIANTS, ScopedPreferenceMemory, VARIANTS
+from recommendation_agent import bounded_rank, make_context, plan_prompt, execute_plan, validate_decision
 
 DAY = 86400
 MODEL = dict(categories={str(i): ('skin' if i < 3 else 'hair' if i < 9 else 'nails')
@@ -32,8 +33,16 @@ def initial(variant):
 
 class MechanismTests(unittest.TestCase):
     def test_exact_four_configurations(self):
-        self.assertEqual(set(VARIANTS), {'no_adaptive_granularity','no_revision','no_recovery','no_both'})
-        self.assertFalse(any(vars(VARIANTS['no_both']).values()))
+        disabled = {name: {k for k, v in vars(flags).items() if not v} for name, flags in VARIANTS.items()}
+        self.assertEqual(disabled, {
+            'no_adaptive_granularity': {'adaptive_granularity'},
+            'no_local_reopening': {'local_reopening'},
+            'no_local_revision_and_state_recovery': {'local_revision', 'local_reopening', 'recovery'},
+            'no_agent_review': {'agent_review'},
+        })
+        self.assertEqual(ALL_VARIANTS['no_recovery'], VARIANTS['no_local_reopening'])
+        config = Path(__file__).resolve().parent / 'configs' / 'paper_ablations.json'
+        self.assertEqual(json.loads(config.read_text())['requested_variants'], ['full', *VARIANTS])
 
     def test_local_revision_and_no_revision(self):
         for v in VARIANTS:
@@ -59,7 +68,7 @@ class MechanismTests(unittest.TestCase):
             self.assertEqual(replay.trace(), m.trace())
             if VARIANTS[v].recovery:
                 self.assertNotEqual(m.assess(KEY)['state'], 'withdrawn')
-                self.assertGreater(m.assess(KEY)['effective_weight'], 0)
+                self.assertEqual(m.assess(KEY)['effective_weight'] > 0, VARIANTS[v].local_reopening)
             else:
                 self.assertEqual(m.assess(KEY)['state'], 'withdrawn')
                 self.assertEqual(m.assess(KEY)['effective_weight'], 0)
@@ -67,6 +76,21 @@ class MechanismTests(unittest.TestCase):
             # Target category now has four visits; there is no cold-only gate.
             self.assertEqual(m.visits['hair'], 4)
             if VARIANTS[v].recovery: self.assertGreater(m.score([5])[0][0], 0)
+
+    def test_local_reopening_is_independent_of_state_recovery(self):
+        for variant in ('full', 'no_local_reopening', 'no_recovery'):
+            m = initial(variant)
+            observe(m, 3, 1)
+            self.assertNotEqual(m.assess(KEY)['state'], 'withdrawn')
+            self.assertFalse(m.assess(KEY)['content_allows_destination'])
+            observe(m, 5); observe(m, 5)
+            self.assertFalse(m.assess(KEY)['content_allows_destination'])
+            observe(m, 6)
+            self.assertEqual(m.assess(KEY)['state'], 'confirmed')
+            self.assertEqual(m.assess(KEY)['content_allows_destination'], variant == 'full')
+            self.assertEqual(m.assess(KEY)['effective_weight'] > 0, variant == 'full')
+            self.assertGreater(m.assess(OTHER)['effective_weight'], 0.)
+            self.assertGreater(m.assess(KEY)['destination']['negative'], 0.)
 
     def test_no_inferred_ancestor_and_missing_token_is_neutral(self):
         m = initial('no_recovery')
@@ -126,7 +150,7 @@ class MechanismTests(unittest.TestCase):
             self.assertEqual(approved['errors'],[])
             self.assertEqual(len(approved['approved']),1)
 
-    def test_four_variants_execute_independent_agent_calls(self):
+    def test_only_reviewed_variants_call_the_agent(self):
         class Qwen:
             def __init__(self): self.calls = []
             def generate(self, requests, path, *args, **kwargs):
@@ -143,19 +167,78 @@ class MechanismTests(unittest.TestCase):
                 return result
         class Reviews:
             def event(self,uid,index,item,sequence): return review_event(uid,index,item,(1+10*index)*DAY,5)
+        candidates = [7, 3] + [i for i in range(1, 21) if i not in (7, 3)]
         case=dict(event_id='test:u:2',uid='u',index=2,history=[1,2],target=3,
-            candidates=list(range(1,21)),baseline=list(reversed(range(20))),gate=.8)
+            candidates=candidates,baseline=[1., .999] + [-float(i) for i in range(18)],gate=.8)
         qwen=Qwen()
         with tempfile.TemporaryDirectory() as tmp:
             for v in VARIANTS:
-                run_variant(qwen,[case],CARDS,MODEL,{'u':{}},Reviews(),v,Path(tmp)/v,
-                    dict(strength=.5,min_confidence='medium'))
+                setting = dict(strength=.5, min_confidence='medium')
+                predictions = run_variant(qwen,[case],CARDS,MODEL,{'u':{}},Reviews(),v,Path(tmp)/v,setting)
                 action=json.loads((Path(tmp)/v/'actions.jsonl').read_text().splitlines()[0])
+                execution=json.loads((Path(tmp)/v/'ranking_executions.jsonl').read_text().splitlines()[0])
+                check_mechanisms(action, v)
+                order=reconstruct_order(case, action, predictions[0], execution, setting)
+                self.assertEqual(order[:10], predictions[0]['top10'])
+                if v == 'no_agent_review':
+                    self.assertEqual(order[0], 3)
+                    self.assertTrue(action['approved'])
+                    self.assertFalse(action['decision_called'])
+                    self.assertFalse(any('confidence' in row for row in action['approved']))
                 self.assertEqual(action['pre_observation']['events'],2)
                 self.assertEqual(action['post_observation']['events'],3)
                 self.assertEqual(action['pre_observation']['variant'],v)
                 self.assertEqual(action['context']['history_length'],2)
             for v in VARIANTS:
-                self.assertTrue(any(str(Path(tmp)/v/'plan_calls.jsonl')==p for p in qwen.calls))
+                self.assertEqual(str(Path(tmp)/v/'plan_calls.jsonl') in qwen.calls, VARIANTS[v].agent_review)
+
+    def test_strict_swap_and_auditor_reject_ties_for_both_id_orders(self):
+        setting = dict(strength=.5, min_confidence='medium')
+        for neighbor, item in [(2, 1), (1, 2)]:
+            candidates = [neighbor, item, *range(3, 21)]
+            scores = [1., .75] + [-float(i) for i in range(18)]
+            claim = dict(item=item, hypothesis='H1', ledger_weight=.5, confidence='high')
+            case = dict(candidates=candidates, baseline=scores)
+            action = dict(method='full', approved=[claim])
+            prediction = dict(n_approved=1, n_approved_claims=1, ranking_changed=False)
+            order, trace = bounded_rank(candidates, scores, .8, [claim], setting)
+            self.assertEqual(order, candidates)
+            self.assertEqual(reconstruct_order(case, action, prediction, trace, setting), candidates)
+            fake = dict(promoted=item, displaced=neighbor, hypothesis='H1', from_rank=2,
+                        to_rank=1, original_score_gap=.25, bonus=.25)
+            with self.assertRaises(AssertionError):
+                reconstruct_order(case, action, dict(prediction, ranking_changed=True),
+                                  dict(trace, crossings=[fake], max_displacement=1), setting)
+            scores[0] = math.nextafter(1., 0.)
+            self.assertEqual(bounded_rank(candidates, scores, .8, [claim], setting)[0][0], item)
+
+    def test_nonadaptive_variant_uses_only_the_strongest_verified_match(self):
+        claims = [dict(item=3, hypothesis=hid, ledger_weight=weight, confidence='high')
+                  for hid, weight in [('H1', .5), ('H2', 1.)]]
+        args = ([1, 2, 3], [.375, .25, .125], .8, claims, dict(strength=.5, min_confidence='medium'))
+        self.assertEqual(bounded_rank(*args)[0], [3, 1, 2])
+        order, trace = bounded_rank(*args, strongest_only=True)
+        self.assertEqual(order, [1, 3, 2])
+        self.assertEqual([row['hypothesis'] for row in trace['crossings']], ['H2'])
+
+    def test_rule_only_bonus_applies_to_the_first_candidate_reference_score(self):
+        class Reviews:
+            def event(self, uid, index, item, sequence):
+                return review_event(uid, index, item, (1 + 10 * index) * DAY, 5)
+
+        candidates = [3, 9] + [i for i in range(1, 21) if i not in (3, 9)]
+        case = dict(event_id='test:u:2', uid='u', index=2, history=[1, 2], target=9,
+                    candidates=candidates, baseline=[1., .999] + [-float(i) for i in range(18)], gate=.8)
+        setting = dict(strength=.5, min_confidence='medium')
+        with tempfile.TemporaryDirectory() as folder:
+            predictions = run_variant(None, [case], CARDS, MODEL, {'u': {}}, Reviews(),
+                                      'no_agent_review', folder, setting)
+            action = json.loads((Path(folder) / 'actions.jsonl').read_text())
+            execution = json.loads((Path(folder) / 'ranking_executions.jsonl').read_text())
+        self.assertEqual(predictions[0]['top10'][:2], [3, 9])
+        self.assertGreater(execution['bonuses']['3'], 0.)
+        self.assertEqual(execution['bonuses']['3'], execution['bonuses']['9'])
+        check_mechanisms(action, 'no_agent_review')
+        self.assertEqual(reconstruct_order(case, action, predictions[0], execution, setting)[:2], [3, 9])
 
 if __name__ == '__main__': unittest.main(verbosity=2)

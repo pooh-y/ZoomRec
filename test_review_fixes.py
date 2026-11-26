@@ -140,7 +140,7 @@ class ActivationTimeTests(unittest.TestCase):
         self.assertEqual([e['match'] for e in evidence], [False, True])
 
     def test_backfilled_withdrawal_stays_permanent_when_recovery_disabled(self):
-        for variant in ('no_revision', 'no_recovery'):
+        for variant in ('no_revision', 'no_local_revision_and_state_recovery'):
             with self.subTest(variant=variant):
                 m = ScopedPreferenceMemory(MODEL, variant)
                 observe(m, 1, day=1)
@@ -150,7 +150,7 @@ class ActivationTimeTests(unittest.TestCase):
                 self.assertEqual(m.assess(KEY)['state'], 'withdrawn')
                 observe(m, 5, day=20)
                 observe(m, 6, day=30)
-                if variant == 'no_recovery':
+                if variant == 'no_local_revision_and_state_recovery':
                     self.assertEqual(m.assess(KEY)['state'], 'withdrawn')
                     self.assertEqual(m.assess(KEY)['effective_weight'], 0)
                 else:

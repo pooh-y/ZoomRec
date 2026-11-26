@@ -20,13 +20,13 @@ def parse_object(raw):
     if not isinstance(x,dict): raise ValueError('response is not an object')
     return x
 
-def make_context(history,candidates,baseline,gate,memory,cards):
+def make_context(history,candidates,baseline,gate,memory,cards, *, include_first=False):
     assert len(set(candidates))==len(candidates)==len(baseline)
     base={int(i):float(s) for i,s in zip(candidates,baseline)}
     order=sorted(base,key=lambda i:(-base[i],i)); ranks={i:j+1 for j,i in enumerate(order)}
     # Present eligible options in the frozen shuffle. Ranks and neighbors still use the base scores.
     _,contrib=memory.score(candidates)
-    options = [row for row in contrib if row['score'] > 0 and ranks[row['item']] > 1]
+    options = [row for row in contrib if row['score'] > 0 and (include_first or ranks[row['item']] > 1)]
     fixed=hasattr(memory,'mechanisms') and not memory.mechanisms.adaptive_granularity
     def claim_order(a):
         key=tuple(a['key'])
@@ -46,8 +46,8 @@ def make_context(history,candidates,baseline,gate,memory,cards):
             k=tuple(a['key'])
             if k in ids: avail.append(ids[k]); weights[(i,k)]=float(a['weight'])
         if avail:
-            opp=order[ranks[i]-2]
-            rows.append(dict(**card(i),hypotheses=avail,competitor=card(opp),prior_category_visits=memory.visits[memory.categories[i]]))
+            competitor = card(order[ranks[i]-2]) if ranks[i] > 1 else None
+            rows.append(dict(**card(i),hypotheses=avail,competitor=competitor,prior_category_visits=memory.visits[memory.categories[i]]))
     by_index={e['index']:e for e in memory.events}; recent=[]
     for j,i in list(enumerate(history))[-5:]:
         e=by_index[j]; recent.append(dict(index=j,item=i,title=cards[i]['title'][:160],category=memory.categories[i],timestamp=e['timestamp'],rating=e['rating'],behavior=e['behavior']))
@@ -159,8 +159,21 @@ def validate_decision(raw,context,observations):
     # Each distinct approval supplies one potential adjacent swap.
     return dict(approved=[by_claim[pair] for pair in sorted(by_claim)],errors=errors)
 
-def bounded_rank(candidates, baseline, model_uncertainty, approved, setting):
-    """Try one adjacent promotion per independent, confidence-qualified claim."""
+def rule_approvals(context):
+    """Use every eligible match from the pre-prediction memory without an agent call."""
+    matches = []
+    for option in context['summary']['options']:
+        item = option['item']
+        for hid in option['hypotheses']:
+            key = tuple(context['hypotheses'][hid]['key'])
+            matches.append(dict(item=item, hypothesis=hid, ledger_weight=context['weights'][item, key],
+                                source='rule'))
+    return matches
+
+
+def bounded_rank(candidates, baseline, model_uncertainty, approved, setting, *,
+                 agent_review=True, strongest_only=False):
+    """Try a strict adjacent promotion for each admitted claim."""
     base = {int(item): float(score) for item, score in zip(candidates, baseline)}
     assert len(base) == len(candidates) == len(baseline)
     assert all(math.isfinite(score) for score in base.values())
@@ -172,9 +185,12 @@ def bounded_rank(candidates, baseline, model_uncertainty, approved, setting):
         item = row['item']
         if item not in base:
             raise ValueError('approval outside candidates')
-        confidence = row['confidence']
-        if confidence != 'high' and not (confidence == setting['min_confidence'] == 'medium'):
-            continue
+        if agent_review:
+            confidence = row['confidence']
+            if confidence != 'high' and not (confidence == setting['min_confidence'] == 'medium'):
+                continue
+        elif row.get('source') != 'rule':
+            raise ValueError('Expected a rule-qualified preference match')
         weight = row['ledger_weight'] if 'ledger_weight' in row else row['weight']
         bonus = strength * float(weight)
         if bonus > 0:
@@ -189,11 +205,14 @@ def bounded_rank(candidates, baseline, model_uncertainty, approved, setting):
     for item in sorted(claims, key=lambda item: (-adjusted[item], item)):
         pos = order.index(item)
         # Try weaker claims first so stronger ones can clear a later, larger gap.
-        for hypothesis, bonus in sorted(claims[item].items(), key=lambda pair: (pair[1], pair[0])):
+        attempts = sorted(claims[item].items(), key=lambda pair: (pair[1], pair[0]))
+        if strongest_only:
+            attempts = attempts[-1:]
+        for hypothesis, bonus in attempts:
             if pos == 0:
                 break
             neighbor = order[pos - 1]
-            if (-(base[item] + bonus), item) >= (-adjusted[neighbor], neighbor):
+            if base[item] + bonus <= adjusted[neighbor]:
                 continue
             crossings.append(dict(promoted=item, displaced=neighbor, hypothesis=hypothesis,
                                   from_rank=pos + 1, to_rank=pos,

@@ -14,8 +14,7 @@ from test_ablation_mechanisms import MODEL, CARDS, KEY, DAY, initial, observe
 
 class FullMethodTests(unittest.TestCase):
     def test_full_is_enabled_without_changing_four_ablation_definitions(self):
-        self.assertEqual(vars(ALL_VARIANTS['full']),
-            dict(adaptive_granularity=True, local_revision=True, recovery=True))
+        self.assertTrue(all(vars(ALL_VARIANTS['full']).values()))
         self.assertNotIn('full', VARIANTS)
         self.assertEqual(len(VARIANTS), 4)
 

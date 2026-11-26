@@ -40,7 +40,18 @@ Preference memory uses observed items, timestamps and ratings. Category and attr
 
 The full method enables adaptive granularity, local revision and recovery. Each distinct candidate and hypothesis pair can supply one approval. Repeating the same pair adds no evidence. The agent reviews up to eight candidates and six hypotheses per batch and continues with any remaining candidates or hypotheses. The approval cites the candidate directly above it in the baseline ordering. The executor compares it with the neighbor directly above its current position.
 
-The minimum confidence is medium. Each qualifying claim contributes a bonus of `0.5 * effective claim weight`. Process candidates by baseline score plus their highest qualifying bonus. Within each candidate, try claims in order of increasing bonus. For each claim, compare the candidate's baseline score plus that claim's bonus with its current neighbor's adjusted score. Break ties by ascending item ID. When the comparison succeeds, swap the two items once. Continue from the new rank with the next claim. The first position is the natural boundary. A displaced candidate can also move down repeatedly. The execution trace records the hypothesis ID, both items and the ranks for each swap. `max_displacement` reports the largest observed net displacement.
+The minimum confidence is medium. Each qualifying claim contributes a bonus of `0.5 * effective claim weight`. The baseline and candidate processing orders break ties by ascending item ID. Process candidates by baseline score plus their highest qualifying bonus. Within each candidate, try claims in order of increasing bonus. Swap only when the candidate's baseline score plus the current bonus strictly exceeds its predecessor's reference score. On equality both items keep their positions during that comparison. Continue from the current rank with the next claim. The execution trace records the hypothesis ID, both items and the ranks for each swap.
+
+### Section 5.3 ablations
+
+| Variant | Change from the full method |
+| --- | --- |
+| `no_adaptive_granularity` | Admit both levels of eligible matches. Each candidate uses its strongest confidence-qualified, verified match for one adjacent promotion attempt. |
+| `no_local_reopening` | The first matching low rating suspends that destination for the claim permanently. Its evidence state can still recover, and other destinations retain their own scopes. |
+| `no_local_revision_and_state_recovery` | Keep the original category scope. A claim withdrawn by accumulated counterevidence stays withdrawn. Adaptive granularity and agent review are active. |
+| `no_agent_review` | Apply the score bonus for every rule-qualified match, including matches for the initial top item. Use the same strict adjacent comparisons. The reranker makes zero planning or decision calls. The common history summary used by the base ranker is shared. |
+
+The older configuration name `no_recovery` now selects `no_local_reopening`. Earlier releases used that name for disabled claim-state recovery. Use a fresh run directory when comparing these definitions.
 
 ## Inference and metrics
 

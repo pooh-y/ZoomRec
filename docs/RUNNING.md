@@ -16,6 +16,18 @@ The launcher prepares the leave-one-out splits, trains SASRec, starts a local Qw
 
 The default shard size is 256 users, which gives 88 shards for the full dataset. Each `--pilot` invocation processes at most one unfinished shard. Full results require all 22,363 test events.
 
+## Run the Section 5.3 ablations
+
+The default request selects the full method. The paper configuration evaluates it alongside all four ablations on the same candidates, frozen checkpoint and baseline scores.
+
+```bash
+export ZOOMREC_ABLATION_REQUEST=configs/paper_ablations.json
+export ZOOMREC_RUN_DIR=../zoomrec_runs/paper_ablations
+python launch.py --gpu 0 --workers 4 --checkpoint fresh
+```
+
+Use the same two environment settings for a resumed run or a separate audit. The results table and each shard identify the methods by their configuration names. [Ablation definitions](PROTOCOL.md)
+
 To run in the background, keep the same run directory setting:
 
 ```bash

@@ -30,6 +30,19 @@ class ActionOptionsTests(unittest.TestCase):
             self.assertGreater(option['rank'], 1)
             self.assertEqual(option['competitor']['item'], candidates[option['rank'] - 2])
 
+    def test_twelve_hypotheses_share_a_page_with_separate_tool_limits(self):
+        ids = [f'H{i}' for i in range(1, 13)]
+        context = dict(hypotheses=dict.fromkeys(ids),
+                       summary=dict(options=[dict(item=1, hypotheses=ids)],
+                                    hypotheses=[dict(id=hid) for hid in ids]))
+        page, = evidence_pages(context)
+        self.assertEqual([h['id'] for h in page['summary']['hypotheses']], ids)
+        for requested, items in ((ids[:7], [1]), ([], list(range(1, 10)))):
+            with self.subTest(requested=requested, items=items):
+                plan = json.dumps(dict(retrieve_history=requested, verify_items=items))
+                self.assertEqual(execute_plan(plan, page, {}),
+                                 dict(retrieved=[], verified=[], errors=['tool request budget exceeded']))
+
     def test_only_rank_one_supported_skips_both_agent_calls(self):
         class NoCalls:
             def generate(self, *args, **kwargs):
@@ -264,6 +277,7 @@ class MultipleClaimTests(unittest.TestCase):
         class Qwen:
             def __init__(self, reverse):
                 self.reverse = reverse
+                self.visible = []
 
             def generate(self, requests, path, *args):
                 rows = []
@@ -272,18 +286,19 @@ class MultipleClaimTests(unittest.TestCase):
                     if '\nINPUT:\n' in prompt:
                         ctx = json.loads(prompt.split('\nINPUT:\n')[1])
                         option = next(x for x in ctx['options'] if x['item'] == 3)
-                        result = dict(retrieve_history=option['hypotheses'], verify_items=[3])
+                        self.visible.append(option['hypotheses'])
+                        result = dict(retrieve_history=option['hypotheses'][-6:], verify_items=[3])
                     else:
-                        ctx = json.loads(prompt.split('\nCONTEXT:\n')[1].split('\nTOOL_RESULTS:\n')[0])
-                        option = next(x for x in ctx['options'] if x['item'] == 3)
-                        transfers = [dict(item=3, hypothesis=hid, competitor=option['competitor']['item'],
+                        summary, tools = prompt.split('\nCONTEXT:\n')[1].split('\nTOOL_RESULTS:\n')
+                        option = next(x for x in json.loads(summary)['options'] if x['item'] == 3)
+                        transfers = [dict(item=3, hypothesis=h['id'], competitor=option['competitor']['item'],
                                           confidence='high', reason='independent evidence')
-                                     for hid in option['hypotheses']]
+                                     for h in json.loads(tools)['retrieved']]
                         result = dict(transfers=transfers[::-1] if self.reverse else transfers)
                     rows.append(dict(**request, response=json.dumps(result)))
                 return rows
 
-        # One candidate has 19 independently supported claims, spanning four tool calls.
+        # The planner chooses six claims from each of the two batches for this candidate.
         attributes = [f'attribute{i}' for i in range(19)]
         model = dict(categories={str(i): 'skin' if i < 3 else 'hair' for i in range(1, 23)},
                      attributes={str(i): attributes if i <= 3 else [] for i in range(1, 23)},
@@ -297,14 +312,20 @@ class MultipleClaimTests(unittest.TestCase):
         for reverse in (False, True):
             with tempfile.TemporaryDirectory() as tmp:
                 folder = Path(tmp)
-                rows = run_variant(Qwen(reverse), [case], cards, model, {'u': {}}, Reviews(),
+                qwen = Qwen(reverse)
+                rows = run_variant(qwen, [case], cards, model, {'u': {}}, Reviews(),
                                    'full', folder, self.setting)
                 action = json.loads((folder / 'actions.jsonl').read_text().strip())
                 execution = json.loads((folder / 'ranking_executions.jsonl').read_text().strip())
             self.assertEqual(rows[0]['n_approved'], 1)
-            self.assertEqual(rows[0]['n_approved_claims'], 19)
-            self.assertEqual(len(action['decision_call_ids']), 4)
-            self.assertEqual(rows[0]['rank'], 1)
+            self.assertEqual([len(page) for page in qwen.visible], [12, 7])
+            self.assertEqual(len({hid for page in qwen.visible for hid in page}), 19)
+            selected = {hid for page in qwen.visible for hid in page[-6:]}
+            self.assertEqual({row['hypothesis'] for row in action['approved']}, selected)
+            self.assertEqual(rows[0]['n_approved_claims'], 12)
+            self.assertEqual(len(action['plan_call_ids']), 2)
+            self.assertEqual(len(action['decision_call_ids']), 2)
+            self.assertEqual(rows[0]['rank'], 8)
             order = reconstruct_order(case, action, rows[0], execution, self.setting)
             self.assertEqual(order[:10], rows[0]['top10'])
             execution['crossings'][1]['hypothesis'] = execution['crossings'][0]['hypothesis']

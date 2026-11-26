@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json, math
 
-AGENT_CONFIG=dict(seed=20261101,max_retrievals=6,
+AGENT_CONFIG=dict(seed=20261101, max_hypotheses=12, max_retrievals=6,
                   max_verifications=8,batch_size=8,
                   plan_tokens=256,decision_tokens=2048,max_context_tokens=12000,do_sample=False)
 PLAN_INSTRUCTION='''You are a recommendation agent deciding whether a broad category-level interest should influence fine-grained item ranking. The next purchase and category are UNKNOWN. Training-population co-occurrence proposes a hypothesis, and matching title attributes identify candidate items; neither proves this user's preference transfers. Request only useful, already-observed evidence and candidate metadata. Return ONLY JSON: {"retrieve_history":["H1"],"verify_items":[123],"reason":"brief rationale"}. Empty lists are allowed. Do not invent IDs.'''
@@ -61,11 +61,11 @@ def make_context(history,candidates,baseline,gate,memory,cards, *, include_first
     return dict(summary=summary,hypotheses=hypotheses,weights=weights,baseline=base,order=order,history=list(history),gate=float(gate),memory=memory)
 
 def evidence_pages(context):
-    """Keep individual tool calls bounded while making every matching claim reachable."""
+    """Group eligible items and hypotheses for review before the planner selects evidence."""
     summary = context['summary']
     options = summary['options']
     item_budget = AGENT_CONFIG['max_verifications']
-    claim_budget = AGENT_CONFIG['max_retrievals']
+    claim_budget = AGENT_CONFIG['max_hypotheses']
     for first in range(0, len(options), item_budget):
         group = options[first:first + item_budget]
         ids = list(dict.fromkeys(hid for row in group for hid in row['hypotheses']))
@@ -81,7 +81,10 @@ def evidence_pages(context):
                        hypotheses=[row for row in summary['hypotheses'] if row['id'] in hypotheses]))
 
 
-def plan_prompt(context): return PLAN_INSTRUCTION+CLAIM_INSTRUCTION+ACTION_INSTRUCTION+'\nINPUT:\n'+compact(context['summary'])
+def plan_prompt(context):
+    limits = (f" Select at most {AGENT_CONFIG['max_retrievals']} of the listed hypotheses for history retrieval"
+              f" and at most {AGENT_CONFIG['max_verifications']} items from options for verification.")
+    return PLAN_INSTRUCTION + CLAIM_INSTRUCTION + ACTION_INSTRUCTION + limits + '\nINPUT:\n' + compact(context['summary'])
 
 def execute_plan(raw,context,cards):
     errors=[]; hs=[]; items=[]

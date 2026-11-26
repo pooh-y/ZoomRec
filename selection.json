@@ -1,0 +1,7 @@
+{
+  "selected": {
+    "strength": 0.5,
+    "min_confidence": "medium"
+  },
+  "note": "One adjacent swap per qualifying independent claim. Strength and confidence retain their historical settings."
+}

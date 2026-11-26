@@ -1,0 +1,9 @@
+{
+  "requested_variants": [
+    "full"
+  ],
+  "run_full_method": true,
+  "confirmed_decisions": {
+    "restrict_to_cold_categories": false
+  }
+}

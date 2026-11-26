@@ -1,0 +1,28 @@
+# Downloaded data, derived experiment artifacts, and the large language model
+/data/
+/models/
+/runs/
+/loo_run/
+/verification/
+.cache/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.log
+*.pid
+*.lock
+*.tmp
+*.part
+*.incomplete-*.bin
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+# Training outputs belong in the run directory.
+*.pt
+*.pth
+*.safetensors

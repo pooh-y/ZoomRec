@@ -1,0 +1,28 @@
+{
+  "dataset": "Amazon Beauty 5-core 2014",
+  "files": {
+    "data/raw/reviews_Beauty_5.json.gz": {
+      "bytes": 44819276,
+      "sha256": "e5925ec99023f1dc9c7d3dff7ef34cfeacd40d1b981b5525e1e4ba9c8abc18fe"
+    },
+    "data/raw/meta_Beauty.json.gz": {
+      "bytes": 99156148,
+      "sha256": "c7977dc0e0ead14ac7df8c1c6de74da00e4bebfad87a0f0c5763d4c5bc9b53a0"
+    },
+    "freeze/sequences.json": {
+      "bytes": 10678316,
+      "sha256": "3db5b5a84fb3180c108dc429bb77c8ef7819e7af361ba57494e2df777cc2a56e"
+    },
+    "freeze/cards.json": {
+      "bytes": 6110314,
+      "sha256": "8f33f28527be740c7a06cb32ba22beb770ecb671317d942ffa9ed0d236722aa7"
+    },
+    "freeze/item_map.json": {
+      "bytes": 267219,
+      "sha256": "6de3a0bfc08f0e72d6e1b3c9e6c2c89fae653d2dc5b7359034cfdd930ce162dd"
+    }
+  },
+  "reviews_url": "https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/reviews_Beauty_5.json.gz",
+  "metadata_url": "https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/meta_Beauty.json.gz",
+  "source_page": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon/index_2014.html"
+}
